@@ -188,7 +188,7 @@ export default class PostListBase extends PureComponent {
             nextConfig = await mattermostManaged.getLocalConfig();
         }
 
-        if (this.mounted) {
+        if (Object.keys(nextConfig).length) {
             this.setState({
                 managedConfig: nextConfig,
             });
