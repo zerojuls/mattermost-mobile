@@ -13,7 +13,6 @@ import {
     View,
 } from 'react-native';
 
-import ProgressiveImage from 'app/components/progressive_image';
 import ImageCacheManager from 'app/utils/image_cache_manager';
 import {previewImageAtIndex, calculateDimensions} from 'app/utils/images';
 import {getNearestPoint} from 'app/utils/opengraph';
@@ -40,15 +39,11 @@ export default class PostAttachmentOpenGraph extends PureComponent {
     constructor(props) {
         super(props);
 
-        this.state = {
-            hasImage: false,
-            imageUrl: null,
-        };
+        this.state = this.getBestImageUrl(props.openGraphData);
     }
 
     componentDidMount() {
         this.mounted = true;
-        this.getBestImageUrl(this.props.openGraphData);
     }
 
     componentWillMount() {
@@ -62,7 +57,7 @@ export default class PostAttachmentOpenGraph extends PureComponent {
         }
 
         if (this.props.openGraphData !== nextProps.openGraphData) {
-            this.getBestImageUrl(nextProps.openGraphData);
+            this.setState(this.getBestImageUrl(nextProps.openGraphData));
         }
     }
 
@@ -78,7 +73,9 @@ export default class PostAttachmentOpenGraph extends PureComponent {
 
     getBestImageUrl(data) {
         if (!data || !data.images) {
-            return;
+            return {
+                hasImage: false,
+            };
         }
 
         const bestDimensions = {
@@ -88,38 +85,68 @@ export default class PostAttachmentOpenGraph extends PureComponent {
 
         const bestImage = getNearestPoint(bestDimensions, data.images, 'width', 'height');
         const imageUrl = bestImage.secure_url || bestImage.url;
+        const ogImage = data.images.find((i) => i.url === imageUrl || i.secure_url === imageUrl);
 
-        this.setState({
-            hasImage: true,
-            ...bestDimensions,
-            openGraphImageUrl: imageUrl,
-        });
+        let dimensions = bestDimensions;
+        if (ogImage && ogImage.width && ogImage.height) {
+            dimensions = calculateDimensions(ogImage.height, ogImage.width, this.getViewPostWidth());
+        }
 
         if (imageUrl) {
-            ImageCacheManager.cache(null, imageUrl, this.getImageSize);
+            ImageCacheManager.cache(this.getFilename(imageUrl), imageUrl, this.getImageSize);
         }
+
+        return {
+            hasImage: true,
+            ...dimensions,
+            openGraphImageUrl: imageUrl,
+        };
     }
 
+    getFilename = (link) => {
+        let filename = link.substring(link.lastIndexOf('/') + 1, link.indexOf('?') === -1 ? link.length : link.indexOf('?'));
+        const extension = filename.split('.').pop();
+
+        if (extension === filename) {
+            const ext = filename.indexOf('.') === -1 ? '.png' : filename.substring(filename.lastIndexOf('.'));
+            filename = `${filename}${ext}`;
+        }
+
+        return `og-${filename.replace(/:/g, '-')}`;
+    };
+
     getImageSize = (imageUrl) => {
+        const {openGraphData} = this.props;
+        const {openGraphImageUrl} = this.state;
+
         let prefix = '';
         if (Platform.OS === 'android') {
             prefix = 'file://';
         }
 
         const uri = `${prefix}${imageUrl}`;
+        const ogImage = openGraphData.images.find((i) => i.url === openGraphImageUrl || i.secure_url === openGraphImageUrl);
 
-        Image.getSize(uri, (width, height) => {
-            const dimensions = calculateDimensions(height, width, this.getViewPostWidth());
+        if (ogImage && ogImage.width && ogImage.height) {
+            this.setImageSize(uri, ogImage.width, ogImage.height);
+        } else {
+            Image.getSize(uri, (width, height) => {
+                this.setImageSize(uri, width, height);
+            }, () => null);
+        }
+    };
 
-            if (this.mounted) {
-                this.setState({
-                    ...dimensions,
-                    originalHeight: height,
-                    originalWidth: width,
-                    imageUrl: uri,
-                });
-            }
-        }, () => null);
+    setImageSize = (imageUrl, originalWidth, originalHeight) => {
+        if (this.mounted) {
+            const dimensions = calculateDimensions(originalHeight, originalWidth, this.getViewPostWidth());
+
+            this.setState({
+                imageUrl,
+                originalWidth,
+                originalHeight,
+                ...dimensions,
+            });
+        }
     };
 
     getViewPostWidth = () => {
@@ -141,13 +168,7 @@ export default class PostAttachmentOpenGraph extends PureComponent {
             originalWidth,
             originalHeight,
         } = this.state;
-        let filename = link.substring(link.lastIndexOf('/') + 1, link.indexOf('?') === -1 ? link.length : link.indexOf('?'));
-        const extension = filename.split('.').pop();
-
-        if (extension === filename) {
-            const ext = filename.indexOf('.') === -1 ? '.png' : filename.substring(filename.lastIndexOf('.'));
-            filename = `${filename}${ext}`;
-        }
+        const filename = this.getFilename(link);
 
         const files = [{
             caption: filename,
@@ -175,6 +196,13 @@ export default class PostAttachmentOpenGraph extends PureComponent {
         const style = getStyleSheet(theme);
 
         let description = null;
+        let source;
+        if (imageUrl) {
+            source = {
+                uri: imageUrl,
+            };
+        }
+
         if (openGraphData.description) {
             description = (
                 <View style={style.flex}>
@@ -216,15 +244,17 @@ export default class PostAttachmentOpenGraph extends PureComponent {
                 </View>
                 {description}
                 {hasImage &&
-                    <View ref='item'>
+                    <View
+                        ref='item'
+                        style={[style.imageContainer, {width, height}]}
+                    >
                         <TouchableWithoutFeedback
                             onPress={this.handlePreviewImage}
-                            style={{width, height}}
                         >
-                            <ProgressiveImage
+                            <Image
                                 ref='image'
                                 style={[style.image, {width, height}]}
-                                imageUri={imageUrl}
+                                source={source}
                                 resizeMode='contain'
                             />
                         </TouchableWithoutFeedback>
@@ -265,6 +295,9 @@ const getStyleSheet = makeStyleSheetFromTheme((theme) => {
             fontSize: 13,
             color: changeOpacity(theme.centerChannelColor, 0.7),
             marginBottom: 10,
+        },
+        imageContainer: {
+            alignItems: 'center',
         },
         image: {
             borderRadius: 3,
